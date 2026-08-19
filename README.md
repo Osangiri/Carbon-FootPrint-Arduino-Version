@@ -1,4 +1,4 @@
-<img width="4030" height="2078" alt="IMG_0132" src="https://github.com/user-attachments/assets/60b4ac6e-65b3-474c-b13a-db036eb3ea5b" />
+<img width="4030" height="2070" alt="IMG_0132" src="https://github.com/user-attachments/assets/60b4ac6e-65b3-474c-b13a-db036eb3ea5b" />
 
 # Carbon-FootPrint-Arduino-Version
 Arduino + Python carbon footprint calculator using sensor data, real-time CO₂ estimates, LCD feedback, and LED indicators.
