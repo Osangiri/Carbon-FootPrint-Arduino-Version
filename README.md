@@ -1,4 +1,5 @@
-<img width="4032" height="3024" alt="IMG_9908" src="https://github.com/user-attachments/assets/018e5c54-2b6c-4a6c-beeb-d7053d8b15b3" />
+<img width="4030" height="2078" alt="IMG_0132" src="https://github.com/user-attachments/assets/60b4ac6e-65b3-474c-b13a-db036eb3ea5b" />
+
 # Carbon-FootPrint-Arduino-Version
 Arduino + Python carbon footprint calculator using sensor data, real-time CO₂ estimates, LCD feedback, and LED indicators.
 # 🌱 Carbon Footprint Calculator
@@ -78,4 +79,6 @@ Future development will focus on:
 The long-term goal is to create an interactive system that combines **embedded systems, environmental sensing, and software** to help users better understand energy use and carbon footprints.
 
 This project is currently under active development.
+<img width="4031" height="1726" alt="IMG_0131" src="https://github.com/user-attachments/assets/be436871-f8c7-457f-8cea-c5126b5c6ec3" />
+
 
