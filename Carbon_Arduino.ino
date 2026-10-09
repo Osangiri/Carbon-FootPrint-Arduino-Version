@@ -1,124 +1,197 @@
+
 #include <LiquidCrystal.h>
 
-// ---------------- LCD ----------------
-// RS, E, D4, D5, D6, D7
+// LCD pins: RS, E, D4, D5, D6, D7
 LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
 
-// ---------------- Pins ----------------
-const int buttonPin = 7;
+// Hardware pins
+const int PHOTO_PIN = A0;
+const int BUTTON_PIN = 7;
+const int GREEN_LED = 8;
+const int YELLOW_LED = 9;
+const int RED_LED = 10;
 
-const int greenLED = 8;
-const int yellowLED = 9;
-const int redLED = 10;
+// Sensor and serial timing
+const unsigned long SENSOR_INTERVAL_MS = 250;
+const unsigned long DEBOUNCE_MS = 35;
 
-// Current footprint state
-// 0 = LOW
-// 1 = MEDIUM
-// 2 = HIGH
-int state = 0;
+// Prototype states
+const int STATE_LOW = 0;
+const int STATE_MEDIUM = 1;
+const int STATE_HIGH = 2;
 
-bool lastButtonState = LOW;
+int lightValue = 0;
+int footprintState = STATE_LOW;
+float demoIndex = 0.0;
 
-void setup()
-{
-  // Start Serial Communication
-  Serial.begin(9600);
+unsigned long lastSensorTime = 0;
+unsigned long lastDebounceTime = 0;
 
-  // Start LCD
-  lcd.begin(16, 2);
+bool lastButtonReading = LOW;
+bool stableButtonState = LOW;
 
-  // Set pin modes
-  pinMode(buttonPin, INPUT);
+char serialBuffer[64];
+size_t serialIndex = 0;
 
-  pinMode(greenLED, OUTPUT);
-  pinMode(yellowLED, OUTPUT);
-  pinMode(redLED, OUTPUT);
+void sendSensorReading() {
+  lightValue = analogRead(PHOTO_PIN);
 
-  // Welcome screen
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Carbon Foot");
-  lcd.setCursor(0, 1);
-  lcd.print("Calculator");
-
-  delay(2000);
+  Serial.print("LIGHT:");
+  Serial.println(lightValue);
 }
 
-void loop()
-{
-  // ---------------- Read Button ----------------
-  bool buttonState = digitalRead(buttonPin);
+void updateLEDs(int state) {
+  digitalWrite(GREEN_LED, state == STATE_LOW);
+  digitalWrite(YELLOW_LED, state == STATE_MEDIUM);
+  digitalWrite(RED_LED, state == STATE_HIGH);
+}
 
-  // If button was just pressed...
-  if (buttonState == HIGH && lastButtonState == LOW)
-  {
-    // Tell Python the button was pressed
-    Serial.println("NEXT");
+void updateDisplay() {
+  lcd.setCursor(0, 0);
+  lcd.print("Sensor level:   ");
 
-    delay(250);   // Debounce
+  lcd.setCursor(0, 1);
+
+  switch (footprintState) {
+    case STATE_LOW:
+      lcd.print("LOW   Index:");
+      break;
+
+    case STATE_MEDIUM:
+      lcd.print("MED   Index:");
+      break;
+
+    case STATE_HIGH:
+      lcd.print("HIGH  Index:");
+      break;
+
+    default:
+      lcd.print("INVALID STATE  ");
+      return;
   }
 
-  lastButtonState = buttonState;
+  // Print the prototype index, not actual CO2 emissions.
+  lcd.print(demoIndex, 2);
+  lcd.print(" ");
+}
 
-  // ---------------- Receive State from Python ----------------
-  if (Serial.available())
-  {
-    state = Serial.parseInt();
+void handleSerialLine(char *line) {
+  // Expected format: RESULT:<state>:<demoIndex>
+  if (strncmp(line, "RESULT:", 7) != 0) {
+    return;
   }
 
-  // ---------------- Turn LEDs Off ----------------
-  digitalWrite(greenLED, LOW);
-  digitalWrite(yellowLED, LOW);
-  digitalWrite(redLED, LOW);
+  char *stateText = line + 7;
+  char *separator = strchr(stateText, ':');
 
-  // ---------------- Display Results ----------------
+  if (separator == NULL) {
+    return;
+  }
+
+  *separator = '\0';
+
+  char *endPointer;
+  long parsedState = strtol(stateText, &endPointer, 10);
+
+  if (*stateText == '\0' || *endPointer != '\0') {
+    return;
+  }
+
+  char *indexText = separator + 1;
+  float parsedIndex = strtof(indexText, &endPointer);
+
+  if (*indexText == '\0' || *endPointer != '\0') {
+    return;
+  }
+
+  if (parsedState < STATE_LOW ||
+      parsedState > STATE_HIGH ||
+      !isfinite(parsedIndex) ||
+      parsedIndex < 0.0 ||
+      parsedIndex > 10.0) {
+    return;
+  }
+
+  footprintState = (int)parsedState;
+  demoIndex = parsedIndex;
+
+  updateLEDs(footprintState);
+  updateDisplay();
+}
+
+void readSerialLines() {
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+
+    if (c == '\n') {
+      serialBuffer[serialIndex] = '\0';
+
+      if (serialIndex > 0) {
+        handleSerialLine(serialBuffer);
+      }
+
+      serialIndex = 0;
+    } else if (c != '\r') {
+      if (serialIndex < sizeof(serialBuffer) - 1) {
+        serialBuffer[serialIndex++] = c;
+      } else {
+        // Discard an overlong or malformed line.
+        serialIndex = 0;
+      }
+    }
+  }
+}
+
+void handleButton() {
+  bool reading = digitalRead(BUTTON_PIN);
+
+  if (reading != lastButtonReading) {
+    lastDebounceTime = millis();
+    lastButtonReading = reading;
+  }
+
+  if (millis() - lastDebounceTime >= DEBOUNCE_MS) {
+    if (reading != stableButtonState) {
+      stableButtonState = reading;
+
+      if (stableButtonState == HIGH) {
+        Serial.println("NEXT");
+      }
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  lcd.begin(16, 2);
+
+  pinMode(BUTTON_PIN, INPUT);
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(YELLOW_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+
+  updateLEDs(STATE_LOW);
+
+  lcd.setCursor(0, 0);
+  lcd.print("Carbon Tracker");
+  lcd.setCursor(0, 1);
+  lcd.print("Starting...");
+
+  delay(1500);
   lcd.clear();
 
-  switch (state)
-  {
+  Serial.println("READY");
+}
 
-    // ---------- LOW ----------
-    case 0:
+void loop() {
+  handleButton();
+  readSerialLines();
 
-      digitalWrite(greenLED, HIGH);
+  unsigned long now = millis();
 
-      lcd.setCursor(0, 0);
-      lcd.print("Footprint:");
-
-      lcd.setCursor(0, 1);
-      lcd.print("LOW 0.8 kg");
-
-      break;
-
-
-    // ---------- MEDIUM ----------
-    case 1:
-
-      digitalWrite(yellowLED, HIGH);
-
-      lcd.setCursor(0, 0);
-      lcd.print("Footprint:");
-
-      lcd.setCursor(0, 1);
-      lcd.print("MED 1.8 kg");
-
-      break;
-
-
-    // ---------- HIGH ----------
-    case 2:
-
-      digitalWrite(redLED, HIGH);
-
-      lcd.setCursor(0, 0);
-      lcd.print("Footprint:");
-
-      lcd.setCursor(0, 1);
-      lcd.print("HIGH 3.2 kg");
-
-      break;
-
+  if (now - lastSensorTime >= SENSOR_INTERVAL_MS) {
+    lastSensorTime = now;
+    sendSensorReading();
   }
-
-  delay(100);
 }
