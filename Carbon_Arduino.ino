@@ -1,154 +1,198 @@
 
-import csv
-import time
-from datetime import datetime
-from pathlib import Path
+#include <LiquidCrystal.h>
 
-import serial
+// LCD pins: RS, E, D4, D5, D6, D7
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
 
-# Change this if your Arduino uses another port.
-SERIAL_PORT = "/dev/cu.usbmodem14101"
-BAUD_RATE = 9600
+// Hardware pins
+const int PHOTO_PIN = A0;
+const int BUTTON_PIN = 7;
+const int GREEN_LED = 8;
+const int YELLOW_LED = 9;
+const int RED_LED = 10;
 
-# Initial thresholds based on your earlier sensor readings.
-# Calibrate these using repeatable measurements.
-LOW_MAX = 300
-MEDIUM_MAX = 700
+// Sensor and serial timing
+const unsigned long SENSOR_INTERVAL_MS = 250;
+const unsigned long DEBOUNCE_MS = 35;
 
-CSV_FILE = Path("carbon_tracker_log.csv")
+// Prototype states
+const int STATE_LOW = 0;
+const int STATE_MEDIUM = 1;
+const int STATE_HIGH = 2;
 
+int lightValue = 0;
+int footprintState = STATE_LOW;
+float demoIndex = 0.0;
 
-def classify_reading(light_value):
-    """Return a state and a prototype index, not actual CO2 emissions."""
-    demo_index = light_value / 500.0
+unsigned long lastSensorTime = 0;
+unsigned long lastDebounceTime = 0;
 
-    if light_value < LOW_MAX:
-        state = 0
-        level = "LOW"
-    elif light_value < MEDIUM_MAX:
-        state = 1
-        level = "MEDIUM"
-    else:
-        state = 2
-        level = "HIGH"
+bool lastButtonReading = LOW;
+bool stableButtonState = LOW;
 
-    return state, level, demo_index
+char serialBuffer[64];
+size_t serialIndex = 0;
 
+void sendSensorReading() {
+  lightValue = analogRead(PHOTO_PIN);
 
-def initialize_csv():
-    """Create the CSV and its header if it doesn't exist."""
-    if not CSV_FILE.exists():
-        with CSV_FILE.open("w", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow([
-                "timestamp",
-                "light_raw",
-                "demo_index",
-                "state",
-                "level",
-            ])
+  Serial.print("LIGHT:");
+  Serial.println(lightValue);
+}
 
+void updateLEDs(int state) {
+  digitalWrite(GREEN_LED, state == STATE_LOW);
+  digitalWrite(YELLOW_LED, state == STATE_MEDIUM);
+  digitalWrite(RED_LED, state == STATE_HIGH);
+}
 
-def log_reading(light_value, demo_index, state, level):
-    """Append one sensor measurement to the CSV."""
-    with CSV_FILE.open("a", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow([
-            datetime.now().isoformat(timespec="seconds"),
-            light_value,
-            f"{demo_index:.2f}",
-            state,
-            level,
-        ])
+void updateDisplay() {
+  lcd.setCursor(0, 0);
+  lcd.print("Sensor level:   ");
 
+  lcd.setCursor(0, 1);
 
-def main():
-    initialize_csv()
+  switch (footprintState) {
+    case STATE_LOW:
+      lcd.print("LOW   Index:");
+      break;
 
-    # The timeout lets Python continue to handle keyboard interrupts.
-    with serial.Serial(
-        SERIAL_PORT,
-        BAUD_RATE,
-        timeout=1,
-    ) as arduino:
+    case STATE_MEDIUM:
+      lcd.print("MED   Index:");
+      break;
 
-        # Opening a serial connection may reset an Arduino.
-        time.sleep(2)
-        arduino.reset_input_buffer()
+    case STATE_HIGH:
+      lcd.print("HIGH  Index:");
+      break;
 
-        print("Carbon Tracker monitoring started.")
-        print(f"Logging data to: {CSV_FILE.resolve()}")
+    default:
+      lcd.print("INVALID STATE  ");
+      return;
+  }
 
-        latest_reading = None
+  // Print the prototype index, not actual CO2 emissions.
+  lcd.print(demoIndex, 2);
+  lcd.print(" ");
+}
 
-        try:
-            while True:
-                message = (
-                    arduino.readline()
-                    .decode("utf-8", errors="replace")
-                    .strip()
-                )
+void handleSerialLine(char *line) {
+  // Expected format: RESULT:<state>:<demoIndex>
+  if (strncmp(line, "RESULT:", 7) != 0) {
+    return;
+  }
 
-                if not message:
-                    continue
+  char *stateText = line + 7;
+  char *separator = strchr(stateText, ':');
 
-                if message == "READY":
-                    print("Arduino is ready.")
-                    continue
+  if (separator == NULL) {
+    return;
+  }
 
-                if message == "NEXT":
-                    if latest_reading is None:
-                        print("Waiting for the first sensor reading.")
-                    else:
-                        raw, index, state, level = latest_reading
-                        print(
-                            f"Current reading: {raw}, "
-                            f"index: {index:.2f}, level: {level}"
-                        )
-                    continue
+  *separator = '\0';
 
-                if not message.startswith("LIGHT:"):
-                    print(f"Ignoring unknown message: {message}")
-                    continue
+  char *endPointer;
+  long parsedState = strtol(stateText, &endPointer, 10);
 
-                try:
-                    light_value = int(message.split(":", 1)[1])
+  if (*stateText == '\0' || *endPointer != '\0') {
+    return;
+  }
 
-                    if not 0 <= light_value <= 1023:
-                        raise ValueError("Reading outside ADC range")
+  char *indexText = separator + 1;
+  float parsedIndex = strtof(indexText, &endPointer);
 
-                except ValueError:
-                    print(f"Invalid sensor message: {message}")
-                    continue
+  if (*indexText == '\0' || *endPointer != '\0') {
+    return;
+  }
 
-                state, level, demo_index = classify_reading(light_value)
+  if (parsedState < STATE_LOW ||
+      parsedState > STATE_HIGH ||
+      !isfinite(parsedIndex) ||
+      parsedIndex < 0.0 ||
+      parsedIndex > 10.0) {
+    return;
+  }
 
-                latest_reading = (
-                    light_value,
-                    demo_index,
-                    state,
-                    level,
-                )
+  footprintState = (int)parsedState;
+  demoIndex = parsedIndex;
 
-                # Protocol: RESULT:<state>:<demo_index>
-                response = f"RESULT:{state}:{demo_index:.2f}\n"
-                arduino.write(response.encode("utf-8"))
+  updateLEDs(footprintState);
+  updateDisplay();
+}
 
-                log_reading(light_value, demo_index, state, level)
+void readSerialLines() {
+  while (Serial.available() > 0) {
+    char c = Serial.read();
 
-                print(
-                    f"Light: {light_value:4d} | "
-                    f"Demo index: {demo_index:.2f} | "
-                    f"Level: {level}"
-                )
+    if (c == '\n') {
+      serialBuffer[serialIndex] = '\0';
 
-        except KeyboardInterrupt:
-            print("\nMonitoring stopped.")
+      if (serialIndex > 0) {
+        handleSerialLine(serialBuffer);
+      }
 
-        finally:
-            print("Serial connection closed.")
+      serialIndex = 0;
+    } else if (c != '\r') {
+      if (serialIndex < sizeof(serialBuffer) - 1) {
+        serialBuffer[serialIndex++] = c;
+      } else {
+        // Discard an overlong or malformed line.
+        serialIndex = 0;
+      }
+    }
+  }
+}
 
+void handleButton() {
+  bool reading = digitalRead(BUTTON_PIN);
 
-if __name__ == "__main__":
-    main()
+  if (reading != lastButtonReading) {
+    lastDebounceTime = millis();
+    lastButtonReading = reading;
+  }
+
+  if (millis() - lastDebounceTime >= DEBOUNCE_MS) {
+    if (reading != stableButtonState) {
+      stableButtonState = reading;
+
+      if (stableButtonState == HIGH) {
+        Serial.println("NEXT");
+      }
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  lcd.begin(16, 2);
+
+  pinMode(BUTTON_PIN, INPUT);
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(YELLOW_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+
+  updateLEDs(STATE_LOW);
+
+  lcd.setCursor(0, 0);
+  lcd.print("Carbon Tracker");
+  lcd.setCursor(0, 1);
+  lcd.print("Starting...");
+
+  delay(1500);
+  lcd.clear();
+
+  Serial.println("READY");
+}
+
+void loop() {
+  handleButton();
+  readSerialLines();
+
+  unsigned long now = millis();
+
+  if (now - lastSensorTime >= SENSOR_INTERVAL_MS) {
+    lastSensorTime = now;
+    sendSensorReading();
+  }
+}
 
